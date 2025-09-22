@@ -1,8 +1,14 @@
+"""
+Maya to MuJoCo Animation Streamer - Fixed Version
+Uses frame change events instead of timers for accurate streaming
+"""
+
 import json
 import time
 import socket
+import threading
 import maya.cmds as cmds
-import maya.api.OpenMaya as om
+import maya.mel as mel
 
 # ============================================================================
 # CONFIGURATION
@@ -11,7 +17,6 @@ class Config:
     """Central configuration for the streamer"""
     HOST = "127.0.0.1"
     PORT = 5000
-    DEFAULT_FPS = 30
     DEFAULT_MAYA_RANGE = (0, 90)      # degrees
     DEFAULT_MUJOCO_RANGE = (-3.14, 3.14)  # radians
     SOCKET_BUFFER_SIZE = 65536
@@ -24,33 +29,25 @@ class StreamerState:
     def __init__(self):
         self.actuator_mappings = []
         self.socket_client = None
-        self.timer_callback_id = None
         self.is_streaming = False
-        self.target_fps = Config.DEFAULT_FPS
         self.last_sent_frame = -1
-    
+        self.frame_job = None
+        self.sequential_thread = None
+        self.stream_mode = "realtime"  # "realtime" or "sequential"
+        
     def reset_connection(self):
         """Clean up connection state"""
         self.socket_client = None
         self.is_streaming = False
         self.last_sent_frame = -1
-        
+
 state = StreamerState()
 
 # ============================================================================
 # CORE FUNCTIONALITY
 # ============================================================================
 def map_value(value, from_range, to_range):
-    """
-    Map a value from one range to another
-    Args:
-        value: Input value (handles lists/tuples)
-        from_range: (min, max) of input range
-        to_range: (min, max) of output range
-    Returns:
-        Mapped value
-    """
-    # Handle Maya's list/tuple returns
+    """Map a value from one range to another"""
     if isinstance(value, (list, tuple)):
         value = value[0]
     
@@ -58,38 +55,31 @@ def map_value(value, from_range, to_range):
     from_min, from_max = float(from_range[0]), float(from_range[1])
     to_min, to_max = float(to_range[0]), float(to_range[1])
     
-    # Clamp to input range
     value = max(min(value, from_max), from_min)
     
-    # Avoid division by zero
     if from_max == from_min:
         return to_min
     
-    # Linear interpolation
     normalized = (value - from_min) / (from_max - from_min)
     return to_min + normalized * (to_max - to_min)
 
-def build_frame_data():
-    """
-    Build a frame of animation data from current Maya state
-    Returns:
-        Dictionary with frame data or None if no mappings
-    """
-    current_frame = cmds.currentTime(query=True)
-    
+def send_frame_data(frame_number):
+    """Send data for a specific frame"""
+    if not state.socket_client:
+        return False
+        
     frame_data = {
         "type": "FRAME",
-        "frame": int(current_frame),
+        "frame": int(frame_number),
         "timestamp": time.time(),
         "joints": {}
     }
     
     for mapping in state.actuator_mappings:
         try:
-            # Get Maya attribute value
-            maya_value = cmds.getAttr(mapping["maya_attr"])
+            # Get value at specific frame
+            maya_value = cmds.getAttr(mapping["maya_attr"], time=frame_number)
             
-            # Map to MuJoCo range
             mujoco_value = map_value(
                 maya_value,
                 (mapping["maya_min"], mapping["maya_max"]),
@@ -102,62 +92,164 @@ def build_frame_data():
             print(f"Warning: Failed to read {mapping['maya_attr']}: {e}")
             continue
     
-    return frame_data if frame_data["joints"] else None
-
-def send_frame():
-    """Send current frame data to MuJoCo"""
-    if not state.socket_client or not state.is_streaming:
-        return
-    
-    # Avoid sending duplicate frames
-    current_frame = cmds.currentTime(query=True)
-    if current_frame == state.last_sent_frame:
-        return
-    
-    state.last_sent_frame = current_frame
+    if not frame_data["joints"]:
+        return False
     
     try:
-        frame_data = build_frame_data()
-        if frame_data:
-            message = (json.dumps(frame_data) + "\n").encode()
-            state.socket_client.sendall(message)
-            print(f"Frame {int(current_frame)}: Sent {len(frame_data['joints'])} joints")
+        message = (json.dumps(frame_data) + "\n").encode()
+        state.socket_client.sendall(message)
+        return True
     except socket.error as e:
         print(f"Connection error: {e}")
-        cmds.warning("Lost connection to MuJoCo!")
-        disconnect_mujoco()
-    except Exception as e:
-        print(f"Failed to send frame: {e}")
+        return False
 
-# ============================================================================
-# TIMER MANAGEMENT
-# ============================================================================
-def start_streaming_timer():
-    """Start the Maya timer for streaming"""
-    stop_streaming_timer()  # Clean up any existing timer
+def on_frame_changed():
+    """Called when Maya's frame changes (real-time mode)"""
+    if not state.is_streaming or state.stream_mode != "realtime":
+        return
+        
+    current_frame = int(cmds.currentTime(q=True))
+    
+    # Handle backwards scrubbing or jumping
+    if state.last_sent_frame >= 0 and current_frame != state.last_sent_frame + 1:
+        # Non-sequential change - just send current frame
+        if send_frame_data(current_frame):
+            print(f"Sent frame {current_frame} (jumped)")
+            state.last_sent_frame = current_frame
+    else:
+        # Sequential playback
+        if send_frame_data(current_frame):
+            state.last_sent_frame = current_frame
+
+def sequential_stream_thread():
+    """Thread function for sequential streaming"""
+    start = int(cmds.playbackOptions(q=True, minTime=True))
+    end = int(cmds.playbackOptions(q=True, maxTime=True))
+    
+    print(f"Sequential streaming: frames {start} to {end}")
+    
+    # Store original frame
+    original_frame = cmds.currentTime(q=True)
+    
+    # Calculate timing
+    maya_fps = mel.eval('currentTimeUnitToFPS')
+    frame_duration = 1.0 / maya_fps
+    
+    frames_sent = 0
+    start_time = time.time()
     
     try:
-        interval = max(0.001, 1.0 / state.target_fps)
-        
-        def timer_callback(elapsed_time, last_time, client_data):
-            if state.is_streaming and state.socket_client:
-                send_frame()
-        
-        state.timer_callback_id = om.MTimerMessage.addTimerCallback(
-            interval, timer_callback
-        )
-        print(f"Streaming timer started at {state.target_fps} FPS")
+        for frame in range(start, end + 1):
+            if not state.is_streaming:
+                break
+                
+            frame_start = time.time()
+            
+            # Move to frame and evaluate
+            cmds.currentTime(frame, edit=True, update=True)
+            
+            # Send frame data
+            if send_frame_data(frame):
+                frames_sent += 1
+                if frames_sent % 10 == 0:
+                    print(f"Progress: {frame}/{end} ({frames_sent} sent)")
+            
+            # Timing control
+            elapsed = time.time() - frame_start
+            if elapsed < frame_duration:
+                time.sleep(frame_duration - elapsed)
+                
     except Exception as e:
-        print(f"Failed to start timer: {e}")
+        print(f"Sequential stream error: {e}")
+        
+    finally:
+        # Restore original frame
+        cmds.currentTime(original_frame, edit=True)
+        
+        total_time = time.time() - start_time
+        print(f"\nSequential stream complete:")
+        print(f"  Frames sent: {frames_sent}")
+        print(f"  Time: {total_time:.1f}s")
+        print(f"  Avg FPS: {frames_sent/total_time:.1f}")
+        
+        state.is_streaming = False
+        cmds.evalDeferred(update_ui_after_stream)
 
-def stop_streaming_timer():
-    """Stop the Maya timer"""
-    if state.timer_callback_id:
+def update_ui_after_stream():
+    """Update UI after streaming completes"""
+    cmds.button("realtimeBtn", e=True, label="Real-time Stream", bgc=(0.3, 0.6, 0.3))
+    cmds.button("sequentialBtn", e=True, label="Sequential Stream", bgc=(0.3, 0.6, 0.6))
+
+# ============================================================================
+# STREAMING CONTROL
+# ============================================================================
+def start_realtime_stream(*args):
+    """Start real-time streaming (follows timeline)"""
+    if not state.socket_client:
+        cmds.warning("Not connected!")
+        return
+        
+    if state.is_streaming:
+        stop_streaming()
+        return
+        
+    state.stream_mode = "realtime"
+    state.is_streaming = True
+    state.last_sent_frame = -1
+    
+    # Create script job for frame changes
+    if state.frame_job:
+        cmds.scriptJob(kill=state.frame_job)
+    state.frame_job = cmds.scriptJob(event=["timeChanged", on_frame_changed])
+    
+    cmds.button("realtimeBtn", e=True, label="Stop Real-time", bgc=(0.6, 0.3, 0.3))
+    cmds.button("sequentialBtn", e=True, enable=False)
+    
+    cmds.inViewMessage(amg="Real-time streaming active", pos="topCenter", fade=True)
+    print("Real-time streaming started - play timeline or scrub")
+
+def start_sequential_stream(*args):
+    """Start sequential streaming (forces all frames)"""
+    if not state.socket_client:
+        cmds.warning("Not connected!")
+        return
+        
+    if state.is_streaming:
+        stop_streaming()
+        return
+        
+    state.stream_mode = "sequential"
+    state.is_streaming = True
+    
+    # Start thread
+    state.sequential_thread = threading.Thread(target=sequential_stream_thread)
+    state.sequential_thread.daemon = True
+    state.sequential_thread.start()
+    
+    cmds.button("sequentialBtn", e=True, label="Stop Sequential", bgc=(0.6, 0.3, 0.3))
+    cmds.button("realtimeBtn", e=True, enable=False)
+    
+    cmds.inViewMessage(amg="Sequential streaming started", pos="topCenter", fade=True)
+
+def stop_streaming(*args):
+    """Stop any active streaming"""
+    state.is_streaming = False
+    
+    # Kill script job
+    if state.frame_job:
         try:
-            om.MMessage.removeCallback(state.timer_callback_id)
+            cmds.scriptJob(kill=state.frame_job)
         except:
             pass
-        state.timer_callback_id = None
+        state.frame_job = None
+    
+    # Wait for thread
+    if state.sequential_thread and state.sequential_thread.is_alive():
+        state.sequential_thread.join(timeout=1)
+    
+    update_ui_after_stream()
+    cmds.inViewMessage(amg="Streaming stopped", pos="topCenter", fade=True)
+    print("Streaming stopped")
 
 # ============================================================================
 # CONNECTION MANAGEMENT
@@ -169,15 +261,14 @@ def connect_mujoco(*args):
         return
     
     try:
-        # Create and configure socket
         state.socket_client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         state.socket_client.connect((Config.HOST, Config.PORT))
         state.socket_client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         state.socket_client.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, Config.SOCKET_BUFFER_SIZE)
         
-        # Update UI
         cmds.button("connectBtn", e=True, label="Connected ✓", bgc=(0.2, 0.6, 0.2))
-        cmds.button("streamBtn", e=True, enable=True)
+        cmds.button("realtimeBtn", e=True, enable=True)
+        cmds.button("sequentialBtn", e=True, enable=True)
         
         cmds.inViewMessage(amg="Connected to MuJoCo", pos="topCenter", fade=True)
         print(f"Connected to MuJoCo at {Config.HOST}:{Config.PORT}")
@@ -188,11 +279,8 @@ def connect_mujoco(*args):
 
 def disconnect_mujoco(*args):
     """Disconnect from MuJoCo server"""
-    # Stop streaming first
-    if state.is_streaming:
-        toggle_streaming()
+    stop_streaming()
     
-    # Close socket
     if state.socket_client:
         try:
             state.socket_client.close()
@@ -200,35 +288,16 @@ def disconnect_mujoco(*args):
             pass
     
     state.reset_connection()
-    stop_streaming_timer()
     
-    # Update UI
     cmds.button("connectBtn", e=True, label="Connect", bgc=(0.3, 0.5, 0.8))
-    cmds.button("streamBtn", e=True, label="Start Streaming", bgc=(0.3, 0.6, 0.3), enable=False)
+    cmds.button("realtimeBtn", e=True, label="Real-time Stream", bgc=(0.3, 0.6, 0.3), enable=False)
+    cmds.button("sequentialBtn", e=True, label="Sequential Stream", bgc=(0.3, 0.6, 0.6), enable=False)
     
     cmds.inViewMessage(amg="Disconnected", pos="topCenter", fade=True)
     print("Disconnected from MuJoCo")
 
-def toggle_streaming(*args):
-    """Toggle animation streaming on/off"""
-    if not state.socket_client:
-        cmds.warning("Not connected to MuJoCo!")
-        return
-    
-    state.is_streaming = not state.is_streaming
-    
-    if state.is_streaming:
-        state.last_sent_frame = -1
-        start_streaming_timer()
-        cmds.button("streamBtn", e=True, label="Stop Streaming", bgc=(0.6, 0.3, 0.3))
-        cmds.inViewMessage(amg="Streaming started", pos="topCenter", fade=True)
-    else:
-        stop_streaming_timer()
-        cmds.button("streamBtn", e=True, label="Start Streaming", bgc=(0.3, 0.6, 0.3))
-        cmds.inViewMessage(amg="Streaming stopped", pos="topCenter", fade=True)
-
 # ============================================================================
-# MAPPING MANAGEMENT
+# MAPPING MANAGEMENT (unchanged from your version)
 # ============================================================================
 def refresh_mapping_list():
     """Update the UI list of mappings"""
@@ -240,12 +309,11 @@ def refresh_mapping_list():
 
 def add_mapping(*args):
     """Add a new actuator mapping"""
-    # Get values from UI
     maya_attr = cmds.textField("mayaAttr", q=True, text=True).strip()
     mujoco_act = cmds.textField("mujocoAct", q=True, text=True).strip()
     
     if not maya_attr or not mujoco_act:
-        cmds.warning("Both Maya attribute and MuJoCo actuator must be specified!")
+        cmds.warning("Both fields required!")
         return
     
     try:
@@ -257,7 +325,6 @@ def add_mapping(*args):
         cmds.warning("Invalid range values!")
         return
     
-    # Add mapping
     state.actuator_mappings.append({
         "maya_attr": maya_attr,
         "mujoco_act": mujoco_act,
@@ -268,7 +335,7 @@ def add_mapping(*args):
     })
     
     refresh_mapping_list()
-    print(f"Added mapping: {maya_attr} → {mujoco_act}")
+    print(f"Added: {maya_attr} → {mujoco_act}")
 
 def remove_mapping(*args):
     """Remove selected mapping"""
@@ -277,38 +344,26 @@ def remove_mapping(*args):
         idx = selected[0] - 1
         removed = state.actuator_mappings.pop(idx)
         refresh_mapping_list()
-        print(f"Removed mapping: {removed['maya_attr']} → {removed['mujoco_act']}")
 
 def save_mappings(*args):
     """Save mappings to JSON file"""
-    path = cmds.fileDialog2(fileMode=0, caption="Save Mappings", fileFilter="JSON (*.json)")
+    path = cmds.fileDialog2(fileMode=0, caption="Save", fileFilter="JSON (*.json)")
     if path:
         with open(path[0], 'w') as f:
             json.dump(state.actuator_mappings, f, indent=2)
-        cmds.inViewMessage(amg=f"Saved mappings", pos="topCenter", fade=True)
+        cmds.inViewMessage(amg="Saved", pos="topCenter", fade=True)
 
 def load_mappings(*args):
     """Load mappings from JSON file"""
-    path = cmds.fileDialog2(fileMode=1, caption="Load Mappings", fileFilter="JSON (*.json)")
+    path = cmds.fileDialog2(fileMode=1, caption="Load", fileFilter="JSON (*.json)")
     if path:
         try:
             with open(path[0], 'r') as f:
                 state.actuator_mappings = json.load(f)
             refresh_mapping_list()
-            cmds.inViewMessage(amg=f"Loaded mappings", pos="topCenter", fade=True)
+            cmds.inViewMessage(amg="Loaded", pos="topCenter", fade=True)
         except Exception as e:
-            cmds.warning(f"Failed to load: {e}")
-
-def update_fps(*args):
-    """Update target FPS from UI"""
-    try:
-        new_fps = float(cmds.intField("fpsField", q=True, value=True))
-        if new_fps > 0:
-            state.target_fps = new_fps
-            if state.is_streaming:
-                start_streaming_timer()  # Restart with new FPS
-    except:
-        pass
+            cmds.warning(f"Failed: {e}")
 
 # ============================================================================
 # USER INTERFACE
@@ -320,12 +375,12 @@ def create_ui():
     if cmds.window(window_name, exists=True):
         cmds.deleteUI(window_name)
     
-    window = cmds.window(window_name, title="MuJoCo Streamer", widthHeight=(450, 600))
+    window = cmds.window(window_name, title="MuJoCo Streamer", widthHeight=(450, 650))
     
-    main_layout = cmds.columnLayout(adjustableColumn=True, rowSpacing=10)
+    cmds.columnLayout(adjustableColumn=True, rowSpacing=10)
     
-    # === Connection Section ===
-    cmds.frameLayout(label="Connection", collapsable=True, collapse=False)
+    # Connection
+    cmds.frameLayout(label="Connection", collapsable=True)
     cmds.rowLayout(numberOfColumns=2, columnWidth2=(225, 225))
     cmds.button("connectBtn", label="Connect", command=connect_mujoco, 
                 height=30, bgc=(0.3, 0.5, 0.8))
@@ -334,54 +389,56 @@ def create_ui():
     cmds.setParent("..")
     cmds.setParent("..")
     
-    # === Streaming Control ===
-    cmds.frameLayout(label="Streaming", collapsable=True, collapse=False)
-    cmds.rowLayout(numberOfColumns=3, columnWidth3=(200, 150, 100))
-    cmds.button("streamBtn", label="Start Streaming", command=toggle_streaming,
-                height=30, bgc=(0.3, 0.6, 0.3), enable=False)
-    cmds.text(label="   Target FPS:", align="right")
-    cmds.intField("fpsField", value=state.target_fps, minValue=1, maxValue=120, 
-                  changeCommand=update_fps, width=50)
+    # Streaming modes
+    cmds.frameLayout(label="Streaming Mode", collapsable=True)
+    cmds.columnLayout(adjustableColumn=True)
+    cmds.text(label="Choose streaming mode:", font="boldLabelFont")
+    cmds.separator(height=5)
+    cmds.button("realtimeBtn", label="Real-time Stream", command=start_realtime_stream,
+                height=35, bgc=(0.3, 0.6, 0.3), enable=False,
+                annotation="Streams as you play/scrub timeline")
+    cmds.button("sequentialBtn", label="Sequential Stream", command=start_sequential_stream,
+                height=35, bgc=(0.3, 0.6, 0.6), enable=False,
+                annotation="Forces every frame in sequence")
+    cmds.text(label="Real-time: Follow timeline playback", font="smallObliqueLabelFont")
+    cmds.text(label="Sequential: Guarantee all frames sent", font="smallObliqueLabelFont")
     cmds.setParent("..")
     cmds.setParent("..")
     
-    # === Mappings Section ===
-    cmds.frameLayout(label="Joint Mappings", collapsable=True, collapse=False)
+    # Mappings
+    cmds.frameLayout(label="Joint Mappings", collapsable=True)
     
-    # Mapping list
     cmds.text(label="Active Mappings:", align="left")
-    cmds.textScrollList("mappingList", height=150)
+    cmds.textScrollList("mappingList", height=120)
     
     cmds.separator(height=10)
     
-    # Add new mapping
-    cmds.text(label="Add New Mapping:", align="left", font="boldLabelFont")
+    cmds.text(label="Add Mapping:", font="boldLabelFont")
     
-    cmds.rowLayout(numberOfColumns=2, columnWidth2=(150, 300))
-    cmds.text(label="Maya Attribute:")
-    cmds.textField("mayaAttr", placeholderText="e.g., joint1.rotateX")
+    cmds.rowLayout(numberOfColumns=2, columnWidth2=(120, 325))
+    cmds.text(label="Maya Attr:")
+    cmds.textField("mayaAttr")
     cmds.setParent("..")
     
-    cmds.rowLayout(numberOfColumns=2, columnWidth2=(150, 300))
-    cmds.text(label="MuJoCo Actuator:")
-    cmds.textField("mujocoAct", placeholderText="e.g., shoulder_joint")
+    cmds.rowLayout(numberOfColumns=2, columnWidth2=(120, 325))
+    cmds.text(label="MuJoCo Act:")
+    cmds.textField("mujocoAct")
     cmds.setParent("..")
     
-    # Range settings
-    cmds.rowLayout(numberOfColumns=5, columnWidth5=(100, 80, 50, 80, 140))
-    cmds.text(label="Maya Range:")
+    cmds.rowLayout(numberOfColumns=5, columnWidth5=(80, 80, 40, 80, 165))
+    cmds.text(label="Maya:")
     cmds.floatField("mayaMin", value=Config.DEFAULT_MAYA_RANGE[0], precision=1)
     cmds.text(label=" to ")
     cmds.floatField("mayaMax", value=Config.DEFAULT_MAYA_RANGE[1], precision=1)
-    cmds.text(label=" (degrees)", font="smallPlainLabelFont")
+    cmds.text(label=" degrees", font="smallPlainLabelFont")
     cmds.setParent("..")
     
-    cmds.rowLayout(numberOfColumns=5, columnWidth5=(100, 80, 50, 80, 140))
-    cmds.text(label="MuJoCo Range:")
+    cmds.rowLayout(numberOfColumns=5, columnWidth5=(80, 80, 40, 80, 165))
+    cmds.text(label="MuJoCo:")
     cmds.floatField("mujocoMin", value=Config.DEFAULT_MUJOCO_RANGE[0], precision=2)
     cmds.text(label=" to ")
     cmds.floatField("mujocoMax", value=Config.DEFAULT_MUJOCO_RANGE[1], precision=2)
-    cmds.text(label=" (radians)", font="smallPlainLabelFont")
+    cmds.text(label=" radians", font="smallPlainLabelFont")
     cmds.setParent("..")
     
     cmds.separator(height=10)
