@@ -1,0 +1,234 @@
+[
+  {
+    "maya_attr": "unitree_g1_rig:LeftLegGrp1.rotateX",
+    "mujoco_act": "left_hip_pitch_joint",
+    "maya_min": -150.0,
+    "maya_max": 160.0,
+    "mujoco_min": -2.53,
+    "mujoco_max": 2.88
+  },
+  {
+    "maya_attr": "unitree_g1_rig:LeftLegGrp2.rotateZ",
+    "mujoco_act": "left_hip_roll_joint",
+    "maya_min": -23.0,
+    "maya_max": 130.0,
+    "mujoco_min": -0.524,
+    "mujoco_max": 2.97
+  },
+  {
+    "maya_attr": "unitree_g1_rig:LeftLegGrp3.rotateY",
+    "mujoco_act": "left_hip_yaw_joint",
+    "maya_min": -180.0,
+    "maya_max": 180.0,
+    "mujoco_min": -2.76,
+    "mujoco_max": 2.76
+  },
+  {
+    "maya_attr": "unitree_g1_rig:LeftLegGrp4.rotateX",
+    "mujoco_act": "left_knee_joint",
+    "maya_min": 0.0,
+    "maya_max": 130.0,
+    "mujoco_min": -0.873,
+    "mujoco_max": 2.88
+  },
+  {
+    "maya_attr": "unitree_g1_rig:left_ankle_pitch_joint.rotateX",
+    "mujoco_act": "left_ankle_pitch_joint",
+    "maya_min": -30,
+    "maya_max": 60,
+    "mujoco_min": 0.524,
+    "mujoco_max": -0.873
+  },
+  {
+    "maya_attr": "unitree_g1_rig:left_ankle_yaw_joint.rotateZ",
+    "mujoco_act": "left_ankle_roll_joint",
+    "maya_min": -15.0,
+    "maya_max": 15.0,
+    "mujoco_min": -0.262,
+    "mujoco_max": 0.262
+  },
+  {
+    "maya_attr": "unitree_g1_rig:RightLegGrp1.rotateX",
+    "mujoco_act": "right_hip_pitch_joint",
+    "maya_min": -160.0,
+    "maya_max": 150.0,
+    "mujoco_min": 2.88,
+    "mujoco_max": -2.53
+  },
+  {
+    "maya_attr": "unitree_g1_rig:RightLegGrp2.rotateZ",
+    "mujoco_act": "right_hip_roll_joint",
+    "maya_min": -23.0,
+    "maya_max": 130.0,
+    "mujoco_min": -0.524,
+    "mujoco_max": 2.97
+  },
+  {
+    "maya_attr": "unitree_g1_rig:RightLegGrp3.rotateY",
+    "mujoco_act": "right_hip_yaw_joint",
+    "maya_min": -180.0,
+    "maya_max": 180.0,
+    "mujoco_min": 2.76,
+    "mujoco_max": -2.76
+  },
+  {
+    "maya_attr": "unitree_g1_rig:RightLegGrp4.rotateX",
+    "mujoco_act": "right_knee_joint",
+    "maya_min": 0.0,
+    "maya_max": 130.0,
+    "mujoco_min": -0.873,
+    "mujoco_max": 2.88
+  },
+  {
+    "maya_attr": "unitree_g1_rig:right_ankle_pitch_joint.rotateX",
+    "mujoco_act": "right_ankle_pitch_joint",
+    "maya_min":-30,
+    "maya_max": 60,
+    "mujoco_min": 0.524,
+    "mujoco_max": -0.873
+  },
+  {
+    "maya_attr": "unitree_g1_rig:right_ankle_yaw_joint.rotateZ",
+    "mujoco_act": "right_ankle_roll_joint",
+    "maya_min": -15.0,
+    "maya_max": 15.0,
+    "mujoco_min": 0.262,
+    "mujoco_max": -0.262
+  },
+  {
+    "maya_attr": "unitree_g1_rig:curve17.rotateZ",
+    "mujoco_act": "waist_yaw_joint",
+    "maya_min": -150.0,
+    "maya_max": 150.0,
+    "mujoco_min": -2.62,
+    "mujoco_max": 2.62
+  },
+  {
+    "maya_attr": "unitree_g1_rig:curve10.rotateZ",
+    "mujoco_act": "waist_roll_joint",
+    "maya_min": -25.0,
+    "maya_max": 25.0,
+    "mujoco_min": -0.52,
+    "mujoco_max": 0.52
+  },
+  {
+    "maya_attr": "unitree_g1_rig:curve10.rotateX",
+    "mujoco_act": "waist_pitch_joint",
+    "maya_min": -25.0,
+    "maya_max": 25.0,
+    "mujoco_min": -0.52,
+    "mujoco_max": 0.52
+  },
+  {
+    "maya_attr": "unitree_g1_rig:LeftArm1.rotateX",
+    "mujoco_act": "left_shoulder_pitch_joint",
+    "maya_min": -180.0,
+    "maya_max": 180.0,
+    "mujoco_min": -3.09,
+    "mujoco_max": 2.9
+  },
+  {
+    "maya_attr": "unitree_g1_rig:LeftArm2.rotateZ",
+    "mujoco_act": "left_shoulder_roll_joint",
+    "maya_min": -10.0,
+    "maya_max": 120.0,
+    "mujoco_min": -0.2,
+    "mujoco_max": 2.2515
+  },
+  {
+    "maya_attr": "unitree_g1_rig:LeftArm3.rotateY",
+    "mujoco_act": "left_shoulder_yaw_joint",
+    "maya_min": -170.0,
+    "maya_max": 170.0,
+    "mujoco_min": -2.62,
+    "mujoco_max": 2.62
+  },
+  {
+    "maya_attr": "unitree_g1_rig:LeftArm4.rotateX",
+    "mujoco_act": "left_elbow_joint",
+    "maya_min": -120.0,
+    "maya_max": 30.0,
+    "mujoco_min": 2.09,
+    "mujoco_max": -0.6
+  },
+  {
+    "maya_attr": "unitree_g1_rig:LeftArm5.rotateY",
+    "mujoco_act": "left_wrist_roll_joint",
+    "maya_min": -120.0,
+    "maya_max": 130.0,
+    "mujoco_min": 1.97,
+    "mujoco_max": -1.97
+  },
+  {
+    "maya_attr": "unitree_g1_rig:LeftArm6.rotateY",
+    "mujoco_act": "left_wrist_pitch_joint",
+    "maya_min": -90.0,
+    "maya_max": 90.0,
+    "mujoco_min": 1.61,
+    "mujoco_max": -1.61
+  },
+  {
+    "maya_attr": "unitree_g1_rig:LeftArm7.rotateY",
+    "mujoco_act": "left_wrist_yaw_joint",
+    "maya_min": -90.0,
+    "maya_max": 90.0,
+    "mujoco_min": 1.61,
+    "mujoco_max": -1.61
+  },
+    {
+    "maya_attr": "unitree_g1_rig:RightArm1.rotateX",
+    "mujoco_act": "right_shoulder_pitch_joint",
+    "maya_min": -180.0,
+    "maya_max": 180.0,
+    "mujoco_min": 2.9,
+    "mujoco_max": -3.09
+  },
+  {
+    "maya_attr": "unitree_g1_rig:RightArm2.rotateZ",
+    "mujoco_act": "right_shoulder_roll_joint",
+    "maya_min": -10.0,
+    "maya_max": 120.0,
+    "mujoco_min": -0.2,
+    "mujoco_max": 2.2515
+  },
+  {
+    "maya_attr": "unitree_g1_rig:RightArm3.rotateY",
+    "mujoco_act": "right_shoulder_yaw_joint",
+    "maya_min": -170.0,
+    "maya_max": 170.0,
+    "mujoco_min": -2.62,
+    "mujoco_max": 2.62
+  },
+  {
+    "maya_attr": "unitree_g1_rig:RightArm4.rotateX",
+    "mujoco_act": "right_elbow_joint",
+    "maya_min": -120.0,
+    "maya_max": 30.0,
+    "mujoco_min": 2.09,
+    "mujoco_max": -0.6
+  },
+  {
+    "maya_attr": "unitree_g1_rig:RightArm5.rotateY",
+    "mujoco_act": "right_wrist_roll_joint",
+    "maya_min": -120.0,
+    "maya_max": 130.0,
+    "mujoco_min": 1.97,
+    "mujoco_max": -1.97
+  },
+  {
+    "maya_attr": "unitree_g1_rig:RightArm6.rotateY",
+    "mujoco_act": "right_wrist_pitch_joint",
+    "maya_min": -90.0,
+    "maya_max": 90.0,
+    "mujoco_min": 1.61,
+    "mujoco_max": -1.61
+  },
+  {
+    "maya_attr": "unitree_g1_rig:RightArm7.rotateY",
+    "mujoco_act": "right_wrist_yaw_joint",
+    "maya_min": -90.0,
+    "maya_max": 90.0,
+    "mujoco_min": -1.61,
+    "mujoco_max": 1.61
+  }
+]
