@@ -253,47 +253,37 @@ def update_fps_stats(state):
 def simulation_loop(server, simulation):
     """Main simulation and network processing loop"""
     state = server.state
-    last_animation_time = time.time()
     
     while simulation.is_running():
-        current_time = time.time()
-        frame_processed = False
-        
-        # Receive data from client
+        # --- Step 1: Process all available network data ---
+        # Receive data and put messages in a queue
+        messages = []
         if server.receive_data():
-            last_animation_time = current_time
-            
-            # Process all complete messages
             while True:
                 message = server.get_next_message()
                 if not message:
                     break
-                
-                result = process_message(message, simulation, state)
-                
-                if result:
-                    if result["type"] == "state":
-                        server.send_state(result["data"])
-                        
-                    elif result["type"] == "frame":
-                        # Step simulation once per received FRAME message
-                        simulation.step()
-                        frame_processed = True
-                        state.is_animating = True
-                        update_fps_stats(state)
+                messages.append(message)
+
+        # --- Step 2: Update simulation state from messages ---
+        # Apply the LAST valid frame message from the batch.
+        # This prevents the simulation from "catching up" with multiple steps
+        # and instead just jumps to the latest pose.
+        for message in messages:
+            result = process_message(message, simulation, state)
+            if result and result["type"] == "frame":
+                state.is_animating = True
+                update_fps_stats(state) # Update stats for each processed frame
+            elif result and result["type"] == "state":
+                server.send_state(result["data"])
         
-        # Check for animation timeout
-        if state.is_animating:
-            if current_time - last_animation_time > Config.ANIMATION_TIMEOUT:
-                state.is_animating = False
-                print("\n⏸ Animation stopped (timeout)")
-        
-        # Step simulation if not animating
-        if not state.is_animating and not frame_processed:
-            simulation.step()
-        
-        # Small delay to prevent CPU spinning
-        time.sleep(0.001)
+        # --- Step 3: Advance the physics simulation by one step ---
+        # This runs at a constant rate, regardless of how many frames arrived.
+        simulation.step()
+
+        # The viewer.sync() already handles timing, so a sleep is often not needed,
+        # but a very small one can yield time to other processes.
+        time.sleep(0.0005)
 
 # ============================================================================
 # MAIN EXECUTION

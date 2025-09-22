@@ -146,18 +146,17 @@ def sequential_stream_thread():
             frame_start = time.time()
             
             # Move to frame and evaluate
-            cmds.currentTime(frame, edit=True, update=True)
+            # cmds.currentTime(frame, edit=True, update=True)
             
-            # Send frame data
-            if send_frame_data(frame):
-                frames_sent += 1
-                if frames_sent % 10 == 0:
-                    print(f"Progress: {frame}/{end} ({frames_sent} sent)")
-            
-            # Timing control
-            elapsed = time.time() - frame_start
-            if elapsed < frame_duration:
-                time.sleep(frame_duration - elapsed)
+            # Send frame data directly
+            if not send_frame_data(frame):
+                # If sending fails (e.g., connection lost), stop the stream.
+                print("Failed to send frame data. Stopping stream.")
+                break
+
+            frames_sent += 1
+            if frames_sent % 100 == 0: # Print progress less often
+                print(f"Progress: {frame}/{end} ({frames_sent} sent)")
                 
     except Exception as e:
         print(f"Sequential stream error: {e}")
@@ -167,10 +166,11 @@ def sequential_stream_thread():
         cmds.currentTime(original_frame, edit=True)
         
         total_time = time.time() - start_time
-        print(f"\nSequential stream complete:")
-        print(f"  Frames sent: {frames_sent}")
-        print(f"  Time: {total_time:.1f}s")
-        print(f"  Avg FPS: {frames_sent/total_time:.1f}")
+        if total_time > 0:
+            print(f"\nSequential stream complete:")
+            print(f"  Frames sent: {frames_sent}")
+            print(f"  Time: {total_time:.2f}s")
+            print(f"  Avg FPS: {frames_sent / total_time:.1f}")
         
         state.is_streaming = False
         cmds.evalDeferred(update_ui_after_stream)
@@ -297,7 +297,7 @@ def disconnect_mujoco(*args):
     print("Disconnected from MuJoCo")
 
 # ============================================================================
-# MAPPING MANAGEMENT (unchanged from your version)
+# MAPPING MANAGEMENT
 # ============================================================================
 def refresh_mapping_list():
     """Update the UI list of mappings"""
