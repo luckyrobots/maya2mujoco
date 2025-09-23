@@ -5,12 +5,12 @@ This project provides a simple live streaming bridge between Autodesk Maya and a
 ## Overview
 
 - `mujoco_server.py`: MuJoCo-side animation server and viewer loop. Listens for frames and applies controls to actuators.
- - `websocket_gui.py`: Maya-side streaming tool (to be executed inside Maya's Python environment). Provides a UI to connect, define joint mappings, and stream frames.
+- `maya_streamer.py`: Maya-side streaming tool (run inside Maya). Provides a UI to connect, define joint mappings, gather timeline data, and stream frames.
 - `maya_to_mujoco.json`: Example joint mapping file (Maya attributes to MuJoCo actuator names and ranges).
 
 Data flow:
 1) Start the MuJoCo server locally and open the viewer.
-2) In Maya, run `websocket_gui.py` to open the UI, connect to the server, configure mappings, and start streaming.
+2) In Maya, load `maya_streamer.py` to open the UI, connect to the server, configure mappings, and start streaming.
 3) Scrub/play the Maya timeline to stream frames; the MuJoCo viewer animates accordingly.
 
 ## Prerequisites
@@ -24,19 +24,17 @@ Recommended Python setup (outside Maya):
 ```bash
 python -m venv .venv
 .\.venv\Scripts\activate
-pip install mujoco
+pip install -r requirements.txt
 ```
 
 ## Configuration
 
-Server configuration lives in each server's `Config` class:
+Server configuration lives in `mujoco_server.py` under the `Config` class:
 
 - `HOST`/`PORT`: default `127.0.0.1:5000`
 - `XML_PATH`: absolute path to your MuJoCo model XML
 - `TIMESTEP`: simulation step size (e.g., 0.005 = 200 Hz)
 - `JOINT_LIMIT`: clamp range for actuator commands (radians)
-- `ANIMATION_TIMEOUT`: stop streaming if no frames arrive
-- In `server.py`: `FRAME_PROCESS_MODE` can be `"per_frame"` or `"latest"`.
 
 Update `XML_PATH` to point to your local model. Example from the repo:
 
@@ -58,16 +56,6 @@ You should see a MuJoCo viewer window and a console message:
 - "Server listening on 127.0.0.1:5000"
 - "✓ Server ready - waiting for Maya connection..."
 
-Alternative: `server.py` provides a similar server with a `FRAME_PROCESS_MODE` option:
-
-```bash
-python server.py
-```
-
-Frame modes (in `server.py`):
-- `per_frame`: step the simulation once for every received frame (no frame drops, may lag if Maya sends faster than the sim can step)
-- `latest`: process all incoming messages but step once per tick using the latest frame (drops older frames, lower latency)
-
 ## Using the Maya Streamer UI
 
 Execute `maya_streamer.py` inside Maya's Script Editor (Python tab):
@@ -78,7 +66,7 @@ import maya_streamer
 importlib.reload(maya_streamer)
 ```
 
-This opens the "MuJoCo Streamer" window with:
+This opens the "Maya-to-MuJoCo Streamer" window with:
 - Connect/Disconnect buttons
 - Start/Stop Streaming and FPS control
 - A Joint Mappings panel to define mappings
@@ -104,7 +92,6 @@ Use the UI to Add/Remove mappings. You can Save/Load JSON mapping files. An exam
 
 ## Tips & Troubleshooting
 
-- If the server window prints "Dropped N frames", Maya is advancing faster than the sim steps; consider `latest` mode in `server.py`.
 - If no motion appears:
   - Verify actuator names printed on server startup match your mapping entries
   - Check `XML_PATH` and that the viewer opened successfully
@@ -115,14 +102,32 @@ Use the UI to Add/Remove mappings. You can Save/Load JSON mapping files. An exam
 ## File Reference
 
 - `mujoco_server.py`: server + viewer loop, applies controls per frame and manages FPS stats
-- `websocket_gui.py`: Maya UI for connection, mappings, and streaming; uses `maya.cmds` and `maya.api.OpenMaya`
+- `maya_streamer.py`: Maya UI for connection, mappings, data gathering, and streaming; uses `maya.cmds`
 - `maya_to_mujoco.json`: sample mappings for a Unitree G1 rig
+- `docs/architecture.md`: brief system overview
+
+## Repository Layout
+
+```
+scripts/
+  mujoco_server.py
+  maya_streamer.py
+  maya_to_mujoco.json
+  requirements.txt
+  LICENSE
+  docs/
+    architecture.md
+```
 
 ## Notes
 
 - Run servers with system Python; run the UI inside Maya's Python.
 - Ranges: Maya is specified in degrees; MuJoCo expects radians.
 - Actuator names must exactly match those in the MuJoCo XML. The server logs all discovered actuators on startup.
+
+## License
+
+This project is released under the MIT License. See `LICENSE` for details.
 
 ---
 
