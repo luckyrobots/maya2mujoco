@@ -70,12 +70,12 @@ Frame modes (in `server.py`):
 
 ## Using the Maya Streamer UI
 
-Execute `websocket_gui.py` inside Maya's Script Editor (Python tab):
+Execute `maya_streamer.py` inside Maya's Script Editor (Python tab):
 
 ```python
 import importlib
-import websocket_gui
-importlib.reload(websocket_gui)
+import maya_streamer
+importlib.reload(maya_streamer)
 ```
 
 This opens the "MuJoCo Streamer" window with:

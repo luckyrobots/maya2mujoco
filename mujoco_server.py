@@ -1,3 +1,9 @@
+"""
+MuJoCo Animation Server with Automatic Looping
+Automatically loops the last received animation when Maya disconnects
+No FPS throttling - runs as fast as possible
+"""
+
 import socket
 import threading
 import time
@@ -21,9 +27,6 @@ class Config:
     # Network settings
     BUFFER_SIZE = 8192
     SOCKET_BUFFER = 65536
-    
-    # Animation settings
-    ANIMATION_TIMEOUT = 2.0  # Stop animation after 2 seconds of no data
 
 # ============================================================================
 # SERVER STATE
@@ -33,7 +36,6 @@ class ServerState:
     def __init__(self):
         self.client_socket = None
         self.receive_buffer = ""
-        self.is_animating = False
         
         # Frame tracking
         self.total_frames = 0
@@ -41,12 +43,18 @@ class ServerState:
         self.last_fps_time = time.time()
         self.last_frame_number = -1
         
+        # Animation cache for auto-looping
+        self.animation_frames = []  # List of frame data
+        self.loop_index = 0
+        self.is_receiving = False  # True when receiving from Maya
+        
     def reset_client(self):
         """Reset client connection state"""
         self.client_socket = None
         self.receive_buffer = ""
-        self.is_animating = False
+        self.is_receiving = False
         self.last_frame_number = -1
+        # Animation cache is preserved for looping
 
 # ============================================================================
 # MUJOCO SETUP
@@ -58,6 +66,11 @@ class MuJoCoSimulation:
         self.model = mujoco.MjModel.from_xml_path(Config.XML_PATH)
         self.data = mujoco.MjData(self.model)
         self.model.opt.timestep = Config.TIMESTEP
+        
+        # Store initial state for reset
+        self.initial_qpos = self.data.qpos.copy()
+        self.initial_qvel = self.data.qvel.copy()
+        self.initial_ctrl = self.data.ctrl.copy()
         
         # Build actuator lookup table
         self.actuator_map = self._build_actuator_map()
@@ -79,6 +92,13 @@ class MuJoCoSimulation:
         print(f"Total actuators: {len(actuator_map)}")
         return actuator_map
     
+    def reset_to_start(self):
+        """Reset simulation to initial state"""
+        self.data.qpos[:] = self.initial_qpos
+        self.data.qvel[:] = self.initial_qvel
+        self.data.ctrl[:] = self.initial_ctrl
+        mujoco.mj_forward(self.model, self.data)
+    
     def apply_controls(self, joint_values):
         """Apply joint values to the simulation"""
         applied = 0
@@ -95,13 +115,6 @@ class MuJoCoSimulation:
         """Step the simulation forward"""
         mujoco.mj_step(self.model, self.data)
         self.viewer.sync()
-    
-    def get_state(self):
-        """Get current joint states"""
-        state = {}
-        for name, idx in self.actuator_map.items():
-            state[name] = float(self.data.ctrl[idx])
-        return state
     
     def is_running(self):
         """Check if viewer is still running"""
@@ -134,6 +147,7 @@ class AnimationServer:
                 try:
                     client, addr = self.server_socket.accept()
                     print(f"\n✓ Maya connected from {addr}")
+                    print("Receiving animation...")
                     
                     # Configure client socket
                     client.setblocking(False)
@@ -142,6 +156,7 @@ class AnimationServer:
                     
                     self.state.client_socket = client
                     self.state.receive_buffer = ""
+                    self.state.is_receiving = True
                     
                 except BlockingIOError:
                     pass
@@ -166,6 +181,8 @@ class AnimationServer:
             return False
         except ConnectionResetError:
             print("\n✗ Maya disconnected")
+            print(f"Animation cached: {len(self.state.animation_frames)} frames")
+            print("Playing loop at maximum speed...")
             self.state.reset_client()
             return None
         except Exception as e:
@@ -179,17 +196,6 @@ class AnimationServer:
             return line.strip()
         return None
     
-    def send_state(self, state):
-        """Send current state to client"""
-        if self.state.client_socket:
-            try:
-                message = json.dumps(state) + "\n"
-                self.state.client_socket.sendall(message.encode())
-                return True
-            except Exception as e:
-                print(f"Send error: {e}")
-        return False
-    
     def close(self):
         """Clean up server"""
         self.running = False
@@ -198,16 +204,11 @@ class AnimationServer:
         self.server_socket.close()
 
 # ============================================================================
-# MESSAGE PROCESSING
+# ANIMATION PROCESSING
 # ============================================================================
 def process_message(message, simulation, state):
-    """Process a received message"""
+    """Process a received message and cache frame data"""
     
-    # Handle state request
-    if message == "GET_STATE":
-        return {"type": "state", "data": simulation.get_state()}
-    
-    # Parse JSON message
     try:
         payload = json.loads(message)
     except json.JSONDecodeError:
@@ -217,6 +218,19 @@ def process_message(message, simulation, state):
     if payload.get("type") == "FRAME":
         frame_number = payload.get("frame", -1)
         joints = payload.get("joints", {})
+        
+        # Detect new animation sequence
+        if frame_number < state.last_frame_number and state.last_frame_number > 0:
+            print(f"New animation sequence detected (frame {frame_number})")
+            state.animation_frames.clear()
+            state.loop_index = 0
+        
+        # Cache the frame
+        frame_data = {
+            "frame": frame_number,
+            "joints": joints
+        }
+        state.animation_frames.append(frame_data)
         
         # Check for dropped frames
         if state.last_frame_number >= 0 and frame_number > state.last_frame_number + 1:
@@ -243,9 +257,33 @@ def update_fps_stats(state):
     
     if elapsed >= 1.0:
         fps = state.fps_counter / elapsed
-        print(f"FPS: {fps:.1f} | Frame #{state.last_frame_number} | Total: {state.total_frames}")
+        mode = "RECEIVING" if state.is_receiving else "LOOPING"
+        if state.animation_frames:
+            print(f"{mode}: {fps:.1f} FPS | Frame {state.loop_index}/{len(state.animation_frames)}")
         state.fps_counter = 0
         state.last_fps_time = current_time
+
+def play_looped_animation(simulation, state):
+    """Play cached animation in a loop - no throttling"""
+    if not state.animation_frames or state.is_receiving:
+        return False
+    
+    # Get current frame data
+    frame_data = state.animation_frames[state.loop_index]
+    
+    # Apply joint values
+    simulation.apply_controls(frame_data["joints"])
+    
+    # Move to next frame
+    state.loop_index = (state.loop_index + 1) % len(state.animation_frames)
+    
+    # Reset simulation at loop start
+    if state.loop_index == 0:
+        simulation.reset_to_start()
+    
+    state.fps_counter += 1
+    
+    return True
 
 # ============================================================================
 # MAIN SIMULATION LOOP
@@ -255,35 +293,34 @@ def simulation_loop(server, simulation):
     state = server.state
     
     while simulation.is_running():
-        # --- Step 1: Process all available network data ---
-        # Receive data and put messages in a queue
-        messages = []
+        frame_processed = False
+        
+        # Process incoming data from Maya
         if server.receive_data():
+            # Process all complete messages
             while True:
                 message = server.get_next_message()
                 if not message:
+                    state.is_receiving = False
                     break
-                messages.append(message)
-
-        # --- Step 2: Update simulation state from messages ---
-        # Apply the LAST valid frame message from the batch.
-        # This prevents the simulation from "catching up" with multiple steps
-        # and instead just jumps to the latest pose.
-        for message in messages:
-            result = process_message(message, simulation, state)
-            if result and result["type"] == "frame":
-                state.is_animating = True
-                update_fps_stats(state) # Update stats for each processed frame
-            elif result and result["type"] == "state":
-                server.send_state(result["data"])
+                
+                result = process_message(message, simulation, state)
+                if result and result["type"] == "frame":
+                    frame_processed = True
+                    update_fps_stats(state)
         
-        # --- Step 3: Advance the physics simulation by one step ---
-        # This runs at a constant rate, regardless of how many frames arrived.
-        simulation.step()
-
-        # The viewer.sync() already handles timing, so a sleep is often not needed,
-        # but a very small one can yield time to other processes.
-        time.sleep(0.0005)
+        # Play looped animation when not receiving (no FPS limit)
+        if not state.is_receiving and state.animation_frames:
+            if play_looped_animation(simulation, state):
+                frame_processed = True
+                update_fps_stats(state)
+        
+        # Step simulation
+        if frame_processed or not state.animation_frames:
+            simulation.step()
+        
+        # Very small delay to prevent CPU lock
+        time.sleep(0.0001)
 
 # ============================================================================
 # MAIN EXECUTION
@@ -291,20 +328,20 @@ def simulation_loop(server, simulation):
 def print_banner():
     """Print startup banner"""
     print("\n" + "="*60)
-    print("MuJoCo Animation Server")
+    print("MuJoCo Animation Server - Auto-Loop (No FPS Limit)")
     print("="*60)
     
 def print_instructions():
     """Print usage instructions"""
-    print("\n📋 Instructions:")
-    print("1. Start Maya and load your scene")
-    print("2. Run the Maya streamer script")
-    print("3. Connect to this server")
-    print("4. Configure joint mappings")
-    print("5. Start streaming and play animation")
+    print("\n📋 How it works:")
+    print("1. Receives animation from Maya")
+    print("2. Caches all frames as they arrive")
+    print("3. Loops animation at maximum speed when Maya disconnects")
+    print("4. Continues looping until new animation is received")
+    print("\n⚠ Note: Loop playback runs as fast as possible!")
     print("\n⌨ Viewer Controls:")
-    print("• Space: Pause/resume")
-    print("• Backspace: Reset")
+    print("• Space: Pause/resume simulation")
+    print("• Backspace: Reset view")
     print("• Mouse: Rotate view")
     print("• Scroll: Zoom")
     print("\n" + "-"*60)
