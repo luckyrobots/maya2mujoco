@@ -1,6 +1,6 @@
-# MuJoCo <-> Maya Live Animation Streaming
+# Maya Animation Streaming to Mujoco
 
-This project provides a simple live streaming bridge between Autodesk Maya and a local MuJoCo simulation. A Python server receives animation frames from Maya over TCP, applies the mapped joint values to a MuJoCo model, and displays them in the MuJoCo viewer in real time.
+This project provides a simple streaming bridge between Autodesk Maya and a local MuJoCo simulation. A Python server receives animation frames from Maya over TCP, applies the mapped joint values to a MuJoCo model, and displays them in the MuJoCo viewer in real time.
 
 ## Overview
 
