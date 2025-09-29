@@ -28,6 +28,10 @@ class Config:
     BUFFER_SIZE = 8192
     SOCKET_BUFFER = 65536
 
+    # Playback settings (server-side pacing)
+    PLAYBACK_FPS = 30.0  # Target playback FPS when pacing on server
+    LOOP_WHEN_COMPLETE = True  # Loop cached animation when stream ends
+
 # ============================================================================
 # SERVER STATE
 # ============================================================================
@@ -47,6 +51,15 @@ class ServerState:
         self.animation_frames = []  # List of frame data
         self.loop_index = 0
         self.is_receiving = False  # True when receiving from Maya
+        
+        # Server-side playback pacing
+        self.playback_fps = Config.PLAYBACK_FPS
+        self.playback_dt = 1.0 / self.playback_fps
+        self.steps_per_frame = max(1, int(round(self.playback_dt / Config.TIMESTEP)))
+        self.next_play_time = None
+        self.loop_when_complete = Config.LOOP_WHEN_COMPLETE
+        # Fractional step accumulator for precise average stepping
+        self.step_accumulator = 0.0
         
     def reset_client(self):
         """Reset client connection state"""
@@ -182,7 +195,7 @@ class AnimationServer:
         except ConnectionResetError:
             print("\n✗ Maya disconnected")
             print(f"Animation cached: {len(self.state.animation_frames)} frames")
-            print("Playing loop at maximum speed...")
+            print(f"Playing loop at {self.state.playback_fps:.1f} FPS...")
             self.state.reset_client()
             return None
         except Exception as e:
@@ -204,8 +217,24 @@ class AnimationServer:
         self.server_socket.close()
 
 # ============================================================================
-# ANIMATION PROCESSING
+# ANIMATION PROCESSING & PLAYBACK PACING
 # ============================================================================
+def set_playback_fps(state, fps):
+    """Update server-side playback FPS and recompute pacing."""
+    try:
+        new_fps = float(fps)
+        if new_fps <= 0:
+            return
+    except Exception:
+        return
+    state.playback_fps = new_fps
+    state.playback_dt = 1.0 / new_fps
+    # Compute exact required substeps per displayed frame
+    exact_steps = state.playback_dt / Config.TIMESTEP
+    state.steps_per_frame = max(0, int(exact_steps))
+    state.step_accumulator = exact_steps - state.steps_per_frame
+    state.next_play_time = None  # reset scheduler
+    print(f"Playback FPS set to {new_fps:.1f} (steps/frame: {state.steps_per_frame})")
 def process_message(message, simulation, state):
     """Process a received message and cache frame data"""
     
@@ -218,12 +247,16 @@ def process_message(message, simulation, state):
     if payload.get("type") == "FRAME":
         frame_number = payload.get("frame", -1)
         joints = payload.get("joints", {})
+        incoming_fps = payload.get("fps")
+        if incoming_fps is not None:
+            set_playback_fps(state, incoming_fps)
         
         # Detect new animation sequence
         if frame_number < state.last_frame_number and state.last_frame_number > 0:
             print(f"New animation sequence detected (frame {frame_number})")
             state.animation_frames.clear()
             state.loop_index = 0
+            state.next_play_time = None  # restart pacing
         
         # Cache the frame
         frame_data = {
@@ -239,14 +272,7 @@ def process_message(message, simulation, state):
         
         state.last_frame_number = frame_number
         
-        # Apply joint values
-        applied = simulation.apply_controls(joints)
-        
-        # Update statistics
-        state.total_frames += 1
-        state.fps_counter += 1
-        
-        return {"type": "frame", "applied": applied, "number": frame_number}
+        return {"type": "frame", "applied": None, "number": frame_number}
     
     return None
 
@@ -264,24 +290,58 @@ def update_fps_stats(state):
         state.last_fps_time = current_time
 
 def play_looped_animation(simulation, state):
-    """Play cached animation in a loop - no throttling"""
-    if not state.animation_frames or state.is_receiving:
+    """Throttled playback of cached animation at server-side FPS."""
+    if not state.animation_frames:
         return False
     
-    # Get current frame data
-    frame_data = state.animation_frames[state.loop_index]
+    now = time.time()
+    if state.next_play_time is None:
+        state.next_play_time = now
     
-    # Apply joint values
+    # Wait until the next scheduled frame time
+    if now < state.next_play_time:
+        return False
+    
+    # If we're receiving and reached the current end, wait for more frames
+    if state.loop_index >= len(state.animation_frames):
+        if state.is_receiving:
+            state.next_play_time = now + state.playback_dt
+            return False
+        # End of cached clip; either loop or hold on last frame
+        if state.loop_when_complete:
+            state.loop_index = 0
+            simulation.reset_to_start()
+        else:
+            state.loop_index = len(state.animation_frames) - 1
+    
+    # Apply current frame
+    frame_data = state.animation_frames[state.loop_index]
     simulation.apply_controls(frame_data["joints"])
     
-    # Move to next frame
-    state.loop_index = (state.loop_index + 1) % len(state.animation_frames)
+    # Step simulation for the duration of a single frame
+    steps = state.steps_per_frame
+    # Use the accumulator to distribute fractional steps over time
+    state.step_accumulator += (state.playback_dt / Config.TIMESTEP) - steps
+    if state.step_accumulator >= 1.0:
+        steps += 1
+        state.step_accumulator -= 1.0
+    # Batch substeps and sync viewer once to avoid extra overhead
+    for _ in range(steps):
+        mujoco.mj_step(simulation.model, simulation.data)
+    simulation.viewer.sync()
     
-    # Reset simulation at loop start
-    if state.loop_index == 0:
-        simulation.reset_to_start()
-    
+    # Advance index and counters
+    state.loop_index += 1
     state.fps_counter += 1
+    
+    # Schedule next frame relative to the previous target to avoid drift
+    if state.next_play_time is None:
+        state.next_play_time = now + state.playback_dt
+    else:
+        state.next_play_time += state.playback_dt
+    # If we fell behind significantly, realign to avoid burst catch-up
+    if now - state.next_play_time > state.playback_dt * 0.5:
+        state.next_play_time = now + state.playback_dt
     
     return True
 
@@ -293,34 +353,27 @@ def simulation_loop(server, simulation):
     state = server.state
     
     while simulation.is_running():
-        frame_processed = False
-        
         # Process incoming data from Maya
         if server.receive_data():
-            # Process all complete messages
+            state.is_receiving = True
+            # Drain all complete messages
             while True:
                 message = server.get_next_message()
                 if not message:
                     state.is_receiving = False
                     break
-                
-                result = process_message(message, simulation, state)
-                if result and result["type"] == "frame":
-                    frame_processed = True
-                    update_fps_stats(state)
+                process_message(message, simulation, state)
         
-        # Play looped animation when not receiving (no FPS limit)
-        if not state.is_receiving and state.animation_frames:
-            if play_looped_animation(simulation, state):
-                frame_processed = True
-                update_fps_stats(state)
+        # Pacing-controlled playback (works both while receiving and after)
+        played = play_looped_animation(simulation, state)
+        update_fps_stats(state)
         
-        # Step simulation
-        if frame_processed or not state.animation_frames:
+        # If nothing to play yet, keep the viewer responsive
+        if not played and not state.animation_frames:
             simulation.step()
         
         # Very small delay to prevent CPU lock
-        time.sleep(0.0001)
+        time.sleep(0.0005)
 
 # ============================================================================
 # MAIN EXECUTION
@@ -328,7 +381,7 @@ def simulation_loop(server, simulation):
 def print_banner():
     """Print startup banner"""
     print("\n" + "="*60)
-    print("MuJoCo Animation Server - Auto-Loop (No FPS Limit)")
+    print("MuJoCo Animation Server")
     print("="*60)
     
 def print_instructions():
