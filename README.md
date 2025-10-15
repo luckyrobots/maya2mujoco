@@ -15,7 +15,7 @@ Data flow:
 
 ## Prerequisites
 
-- Windows 10/11 (tested), Python 3.10+ recommended
+- Windows 11 (tested), Python 3.10+ recommended
 - MuJoCo Python bindings installed (`mujoco`), and a valid MuJoCo XML model
 - Autodesk Maya with Python access to `maya.cmds` and `maya.api.OpenMaya`
 - Network access to `127.0.0.1:5000` (default)
